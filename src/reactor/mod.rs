@@ -842,7 +842,7 @@ mod platform {
 
     #[cfg(any(target_os = "dragonfly", target_os = "freebsd"))]
     pub fn all() -> Ready {
-        hup() | UnixReady::aio().into()
+        hup() | UnixReady::aio()
     }
 
     #[cfg(not(any(target_os = "dragonfly", target_os = "freebsd")))]
@@ -860,7 +860,7 @@ mod platform {
 
     #[cfg(any(target_os = "dragonfly", target_os = "freebsd"))]
     fn is_aio(ready: &Ready) -> bool {
-        ready.is_aio()
+        UnixReady::from(*ready).is_aio()
     }
 
     #[cfg(not(any(target_os = "dragonfly", target_os = "freebsd")))]
