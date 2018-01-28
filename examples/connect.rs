@@ -78,14 +78,14 @@ fn main() {
 }
 
 mod tcp {
-    use std::io;
-    use std::net::SocketAddr;
+    use std::io::{self, Read, Write};
+    use std::net::{SocketAddr, Shutdown};
 
     use bytes::{BufMut, BytesMut};
-    use futures::{Future, Stream};
+    use futures::prelude::*;
     use tokio_core::net::TcpStream;
     use tokio_core::reactor::Handle;
-    use tokio_io::AsyncRead;
+    use tokio_io::{AsyncRead, AsyncWrite};
     use tokio_io::codec::{Encoder, Decoder};
 
     pub fn connect(addr: &SocketAddr,
@@ -112,15 +112,48 @@ mod tcp {
         // to the TCP stream. This is done to ensure that happens concurrently
         // with us reading data from the stream.
         Box::new(tcp.map(move |stream| {
+            let stream = CloseWithShutdown(stream);
             let (sink, stream) = stream.framed(Bytes).split();
-            handle.spawn(stdin.forward(sink).then(|result| {
-                if let Err(e) = result {
-                    panic!("failed to write to socket: {}", e)
-                }
-                Ok(())
-            }));
+            let copy_stdin = stdin.forward(sink)
+                .then(|result| {
+                    if let Err(e) = result {
+                        panic!("failed to write to socket: {}", e)
+                    }
+                    Ok(())
+                });
+            handle.spawn(copy_stdin);
             stream
         }).flatten_stream())
+    }
+
+    /// A small adapter to layer over our TCP stream which uses the `shutdown`
+    /// syscall when the writer side is shut down. This'll allow us to correctly
+    /// inform the remote end that we're done writing.
+    struct CloseWithShutdown(TcpStream);
+
+    impl Read for CloseWithShutdown {
+        fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+            self.0.read(buf)
+        }
+    }
+
+    impl AsyncRead for CloseWithShutdown {}
+
+    impl Write for CloseWithShutdown {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            self.0.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            self.0.flush()
+        }
+    }
+
+    impl AsyncWrite for CloseWithShutdown {
+        fn shutdown(&mut self) -> Poll<(), io::Error> {
+            self.0.shutdown(Shutdown::Write)?;
+            Ok(().into())
+        }
     }
 
     /// A simple `Codec` implementation that just ships bytes around.
