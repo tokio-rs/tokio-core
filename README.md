@@ -1,3 +1,10 @@
+# Deprecation notice.
+
+This crate is scheduled for deprecation in favor of [tokio](http://github.com/tokio-rs/tokio).
+
+`tokio-core` is still actively maintained, but only bug fixes will be applied.
+All new feature development is happening in [tokio](http://github.com/tokio-rs/tokio).
+
 # tokio-core
 
 Core I/O and event loop abstraction for asynchronous I/O in Rust built on
