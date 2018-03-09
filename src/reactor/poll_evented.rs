@@ -88,7 +88,7 @@ impl<E: Evented> PollEvented<E> {
     /// when it's ready.
     pub fn new(io: E, handle: &Handle) -> io::Result<PollEvented<E>> {
         let registration = Registration::new();
-        registration.register(&io)?;
+        registration.register_with(&io, handle.new_tokio_handle())?;
 
         Ok(PollEvented {
             io: io,
