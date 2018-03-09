@@ -5,11 +5,11 @@ use std::fmt;
 use futures::{Async, Future, Poll};
 use mio;
 
-use reactor::{Handle, PollEvented};
+use reactor::{Handle, PollEvented2};
 
 /// An I/O object representing a UDP socket.
 pub struct UdpSocket {
-    io: PollEvented<mio::net::UdpSocket>,
+    io: PollEvented2<mio::net::UdpSocket>,
 }
 
 mod frame;
@@ -26,7 +26,7 @@ impl UdpSocket {
     }
 
     fn new(socket: mio::net::UdpSocket, handle: &Handle) -> io::Result<UdpSocket> {
-        let io = try!(PollEvented::new(socket, handle));
+        let io = try!(PollEvented2::new_with_handle(socket, handle.new_tokio_handle()));
         Ok(UdpSocket { io: io })
     }
 
@@ -82,14 +82,14 @@ impl UdpSocket {
     /// Sends data on the socket to the address previously bound via connect().
     /// On success, returns the number of bytes written.
     pub fn send(&self, buf: &[u8]) -> io::Result<usize> {
-        if let Async::NotReady = self.io.poll_write() {
+        if let Async::NotReady = self.io.poll_write_ready()? {
             return Err(io::ErrorKind::WouldBlock.into())
         }
         match self.io.get_ref().send(buf) {
             Ok(n) => Ok(n),
             Err(e) => {
                 if e.kind() == io::ErrorKind::WouldBlock {
-                    self.io.need_write();
+                    self.io.clear_write_ready()?;
                 }
                 Err(e)
             }
@@ -99,14 +99,14 @@ impl UdpSocket {
     /// Receives data from the socket previously bound with connect().
     /// On success, returns the number of bytes read.
     pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
-        if let Async::NotReady = self.io.poll_read() {
+        if let Async::NotReady = self.io.poll_read_ready(mio::Ready::readable())? {
             return Err(io::ErrorKind::WouldBlock.into())
         }
         match self.io.get_ref().recv(buf) {
             Ok(n) => Ok(n),
             Err(e) => {
                 if e.kind() == io::ErrorKind::WouldBlock {
-                    self.io.need_read();
+                    self.io.clear_read_ready(mio::Ready::readable())?;
                 }
                 Err(e)
             }
@@ -120,7 +120,15 @@ impl UdpSocket {
     /// is only suitable for calling in a `Future::poll` method and will
     /// automatically handle ensuring a retry once the socket is readable again.
     pub fn poll_read(&self) -> Async<()> {
-        self.io.poll_read()
+        self.io.poll_read_ready(mio::Ready::readable())
+            .map(|r| {
+                if r.is_ready() {
+                    Async::Ready(())
+                } else {
+                    Async::NotReady
+                }
+            })
+            .unwrap_or(().into())
     }
 
     /// Test whether this socket is ready to be written to or not.
@@ -130,7 +138,15 @@ impl UdpSocket {
     /// is only suitable for calling in a `Future::poll` method and will
     /// automatically handle ensuring a retry once the socket is writable again.
     pub fn poll_write(&self) -> Async<()> {
-        self.io.poll_write()
+        self.io.poll_write_ready()
+            .map(|r| {
+                if r.is_ready() {
+                    Async::Ready(())
+                } else {
+                    Async::NotReady
+                }
+            })
+            .unwrap_or(().into())
     }
 
     /// Sends data on the socket to the given address. On success, returns the
@@ -139,14 +155,14 @@ impl UdpSocket {
     /// Address type can be any implementer of `ToSocketAddrs` trait. See its
     /// documentation for concrete examples.
     pub fn send_to(&self, buf: &[u8], target: &SocketAddr) -> io::Result<usize> {
-        if let Async::NotReady = self.io.poll_write() {
+        if let Async::NotReady = self.io.poll_write_ready()? {
             return Err(io::ErrorKind::WouldBlock.into())
         }
         match self.io.get_ref().send_to(buf, target) {
             Ok(n) => Ok(n),
             Err(e) => {
                 if e.kind() == io::ErrorKind::WouldBlock {
-                    self.io.need_write();
+                    self.io.clear_write_ready()?;
                 }
                 Err(e)
             }
@@ -177,14 +193,14 @@ impl UdpSocket {
     /// Receives data from the socket. On success, returns the number of bytes
     /// read and the address from whence the data came.
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
-        if let Async::NotReady = self.io.poll_read() {
+        if let Async::NotReady = self.io.poll_read_ready(mio::Ready::readable())? {
             return Err(io::ErrorKind::WouldBlock.into())
         }
         match self.io.get_ref().recv_from(buf) {
             Ok(n) => Ok(n),
             Err(e) => {
                 if e.kind() == io::ErrorKind::WouldBlock {
-                    self.io.need_read();
+                    self.io.clear_read_ready(mio::Ready::readable())?;
                 }
                 Err(e)
             }

@@ -1,3 +1,4 @@
+extern crate tokio;
 extern crate tokio_core;
 extern crate env_logger;
 extern crate futures;
@@ -20,6 +21,27 @@ fn simple() {
     let (tx1, rx1) = oneshot::channel();
     let (tx2, rx2) = oneshot::channel();
     lp.handle().spawn(future::lazy(|| {
+        tx1.send(1).unwrap();
+        Ok(())
+    }));
+    lp.remote().spawn(|_| {
+        future::lazy(|| {
+            tx2.send(2).unwrap();
+            Ok(())
+        })
+    });
+
+    assert_eq!(lp.run(rx1.join(rx2)).unwrap(), (1, 2));
+}
+
+#[test]
+fn simple_send() {
+    drop(env_logger::init());
+    let mut lp = Core::new().unwrap();
+
+    let (tx1, rx1) = oneshot::channel();
+    let (tx2, rx2) = oneshot::channel();
+    lp.handle().spawn_send(future::lazy(|| {
         tx1.send(1).unwrap();
         Ok(())
     }));
@@ -73,6 +95,26 @@ fn spawn_in_poll() {
                 Ok(())
             })
         });
+        Ok(())
+    }));
+
+    assert_eq!(lp.run(rx1.join(rx2)).unwrap(), (1, 2));
+}
+
+#[test]
+fn spawn_in_poll2() {
+    drop(env_logger::init());
+    let mut lp = Core::new().unwrap();
+
+    let (tx1, rx1) = oneshot::channel();
+    let (tx2, rx2) = oneshot::channel();
+    lp.handle().spawn(future::lazy(move || {
+        tx1.send(1).unwrap();
+        tokio::spawn(future::lazy(|| {
+            tx2.send(2).unwrap();
+            Ok(())
+        }));
+
         Ok(())
     }));
 

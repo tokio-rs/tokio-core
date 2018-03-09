@@ -89,7 +89,7 @@
 //! }
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/tokio-core/0.1")]
+#![doc(html_root_url = "https://docs.rs/tokio-core/0.1.13")]
 #![deny(missing_docs)]
 #![deny(warnings)]
 #![cfg_attr(test, allow(deprecated))]
@@ -100,7 +100,10 @@ extern crate futures;
 extern crate iovec;
 extern crate mio;
 extern crate slab;
+extern crate tokio;
+extern crate tokio_executor;
 extern crate tokio_io;
+extern crate tokio_reactor;
 
 #[macro_use]
 extern crate scoped_tls;
