@@ -56,6 +56,24 @@ fn simple_send() {
 }
 
 #[test]
+fn tokio_spawn_from_fut() {
+    drop(env_logger::init());
+    let mut lp = Core::new().unwrap();
+
+    let (tx1, rx1) = oneshot::channel();
+
+    lp.run(future::lazy(|| {
+        tokio::spawn(future::lazy(|| {
+            tx1.send(1).unwrap();
+            Ok(())
+        }));
+        Ok::<_, ()>(())
+    })).unwrap();
+
+    assert_eq!(lp.run(rx1).unwrap(), 1);
+}
+
+#[test]
 fn simple_core_poll() {
     drop(env_logger::init());
     let mut lp = Core::new().unwrap();
