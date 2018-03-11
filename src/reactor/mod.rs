@@ -287,6 +287,11 @@ impl Core {
                     (max_wait, timeout) => max_wait.or(timeout),
                 };
 
+                // Process all the events that came in, dispatching appropriately
+                if self.notify_rx.take() {
+                    CURRENT_LOOP.set(self, || self.consume_queue());
+                }
+
                 // Drain any futures pending spawn
                 {
                     let mut e = self.executor.borrow_mut();
@@ -315,11 +320,6 @@ impl Core {
                 // Process all timeouts that may have just occurred, updating the
                 // current time since
                 self.consume_timeouts(after_poll);
-
-                // Process all the events that came in, dispatching appropriately
-                if self.notify_rx.take() {
-                    CURRENT_LOOP.set(self, || self.consume_queue());
-                }
 
                 debug!("loop process, {:?}", after_poll.elapsed());
             });
