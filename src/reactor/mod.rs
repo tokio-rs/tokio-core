@@ -229,23 +229,33 @@ impl Core {
         where F: Future,
     {
         let mut task = executor::spawn(f);
-        let handle = self.rt.handle().clone();
-        let mut executor = self.rt.executor().clone();
+        let handle1 = self.rt.handle().clone();
+        let handle2 = self.rt.handle().clone();
+        let mut executor1 = self.rt.executor().clone();
+        let mut executor2 = self.rt.executor().clone();
 
         // Make sure the future will run at least once on enter
         self.notify_future.notify(0);
 
         loop {
             if self.notify_future.take() {
+                let mut enter = tokio_executor::enter()
+                    .ok().expect("cannot recursively call into `Core`");
+
                 let res = try!(CURRENT_LOOP.set(self, || {
-                    task.poll_future_notify(&self.notify_future, 0)
+                    ::tokio_reactor::with_default(&handle1, &mut enter, |enter| {
+                        tokio_executor::with_default(&mut executor1, enter, |_| {
+                            task.poll_future_notify(&self.notify_future, 0)
+                        })
+                    })
                 }));
+
                 if let Async::Ready(e) = res {
                     return Ok(e)
                 }
             }
 
-            self.poll(None, &handle, &mut executor);
+            self.poll(None, &handle2, &mut executor2);
         }
     }
 
