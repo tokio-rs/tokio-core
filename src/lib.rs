@@ -89,7 +89,7 @@
 //! }
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/tokio-core/0.1.13")]
+#![doc(html_root_url = "https://docs.rs/tokio-core/0.1.15")]
 #![deny(missing_docs)]
 #![deny(warnings)]
 #![cfg_attr(test, allow(deprecated))]
