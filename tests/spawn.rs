@@ -56,6 +56,27 @@ fn simple_send() {
 }
 
 #[test]
+fn simple_send_current_thread() {
+    drop(env_logger::init());
+    let mut lp = Core::new().unwrap();
+
+    let (tx, rx) = oneshot::channel();
+
+    lp.run(future::lazy(move || {
+        tokio::executor::current_thread::spawn(future::lazy(move || {
+            tx.send(1).unwrap();
+            Ok(())
+        }));
+
+        rx.map_err(|_| panic!())
+            .and_then(|v| {
+                assert_eq!(v, 1);
+                Ok(())
+            })
+    })).unwrap();
+}
+
+#[test]
 fn tokio_spawn_from_fut() {
     drop(env_logger::init());
     let mut lp = Core::new().unwrap();

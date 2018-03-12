@@ -242,10 +242,16 @@ impl Core {
                 let mut enter = tokio_executor::enter()
                     .ok().expect("cannot recursively call into `Core`");
 
+                let notify = &self.notify_future;
+                let mut current_thread = self.executor.borrow_mut();
+
                 let res = try!(CURRENT_LOOP.set(self, || {
                     ::tokio_reactor::with_default(&handle1, &mut enter, |enter| {
-                        tokio_executor::with_default(&mut executor1, enter, |_| {
-                            task.poll_future_notify(&self.notify_future, 0)
+                        tokio_executor::with_default(&mut executor1, enter, |enter| {
+                            current_thread.enter(enter)
+                                .block_on(future::lazy(|| {
+                                    Ok::<_, ()>(task.poll_future_notify(notify, 0))
+                                })).unwrap()
                         })
                     })
                 }));
