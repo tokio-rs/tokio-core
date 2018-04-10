@@ -5,10 +5,8 @@
 //! futures, schedule tasks, issue I/O requests, etc.
 
 use std::cell::RefCell;
-use std::cmp;
 use std::fmt;
 use std::io;
-use std::mem;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, AtomicBool, ATOMIC_USIZE_INIT, Ordering};
@@ -18,18 +16,13 @@ use tokio;
 use tokio::executor::current_thread::{CurrentThread, TaskExecutor};
 use tokio_executor;
 use tokio_executor::park::{Park, Unpark, ParkThread, UnparkThread};
+use tokio_timer::timer::{self, Timer};
 
 use futures::{Future, IntoFuture, Async};
 use futures::future::{self, Executor, ExecuteError};
 use futures::executor::{self, Spawn, Notify};
 use futures::sync::mpsc;
-use futures::task::Task;
 use mio;
-use slab::Slab;
-
-use heap::{Heap, Slot};
-
-mod timeout_token;
 
 mod poll_evented;
 mod poll_evented2;
@@ -58,7 +51,10 @@ pub struct Core {
     rt: tokio::runtime::Runtime,
 
     /// Executes tasks
-    executor: RefCell<CurrentThread>,
+    executor: RefCell<CurrentThread<Timer<ParkThread>>>,
+
+    /// Timer handle
+    timer_handle: timer::Handle,
 
     /// Wakes up the thread when the `run` future is notified
     notify_future: Arc<MyNotify>,
@@ -79,15 +75,6 @@ pub struct Core {
 struct Inner {
     // Tasks that need to be spawned onto the executor.
     pending_spawn: Vec<Box<Future<Item = (), Error = ()>>>,
-
-    // Timer wheel keeping track of all timeouts. The `usize` stored in the
-    // timer wheel is an index into the slab below.
-    //
-    // The slab below keeps track of the timeouts themselves as well as the
-    // state of the timeout itself. The `TimeoutToken` type is an index into the
-    // `timeouts` slab.
-    timer_heap: Heap<(Instant, usize)>,
-    timeouts: Slab<(Option<Slot>, TimeoutState)>,
 }
 
 /// An unique ID for a Core
@@ -109,6 +96,7 @@ pub struct Remote {
     id: usize,
     tx: mpsc::UnboundedSender<Message>,
     new_handle: tokio::reactor::Handle,
+    timer_handle: timer::Handle,
 }
 
 /// A non-sendable handle to an event loop, useful for manufacturing instances
@@ -120,16 +108,7 @@ pub struct Handle {
     thread_pool: ::tokio::runtime::TaskExecutor,
 }
 
-enum TimeoutState {
-    NotFired,
-    Fired,
-    Waiting(Task),
-}
-
 enum Message {
-    UpdateTimeout(usize, Task),
-    ResetTimeout(usize, Instant),
-    CancelTimeout(usize),
     Run(Box<FnBox>),
 }
 
@@ -140,17 +119,19 @@ impl Core {
     /// creation.
     pub fn new() -> io::Result<Core> {
         // Create a new parker
-        let park = ParkThread::new();
+        let timer = Timer::new(ParkThread::new());
 
         // Create notifiers
-        let notify_future = Arc::new(MyNotify::new(park.unpark()));
-        let notify_rx = Arc::new(MyNotify::new(park.unpark()));
+        let notify_future = Arc::new(MyNotify::new(timer.unpark()));
+        let notify_rx = Arc::new(MyNotify::new(timer.unpark()));
 
         // New Tokio reactor + threadpool
         let rt = tokio::runtime::Runtime::new()?;
 
+        let timer_handle = timer.handle();
+
         // Executor to run !Send futures
-        let executor = RefCell::new(CurrentThread::new_with_park(park));
+        let executor = RefCell::new(CurrentThread::new_with_park(timer));
 
         // Used to send messages across threads
         let (tx, rx) = mpsc::unbounded();
@@ -168,10 +149,9 @@ impl Core {
             tx,
             rx,
             executor,
+            timer_handle,
             inner: Rc::new(RefCell::new(Inner {
                 pending_spawn: vec![],
-                timeouts: Slab::with_capacity(1),
-                timer_heap: Heap::new(),
             })),
         })
     }
@@ -203,7 +183,8 @@ impl Core {
         Remote {
             id: self.id,
             tx: self.tx.clone(),
-            new_handle: self.rt.handle().clone(),
+            new_handle: self.rt.reactor().clone(),
+            timer_handle: self.timer_handle.clone()
         }
     }
 
@@ -229,10 +210,11 @@ impl Core {
         where F: Future,
     {
         let mut task = executor::spawn(f);
-        let handle1 = self.rt.handle().clone();
-        let handle2 = self.rt.handle().clone();
+        let handle1 = self.rt.reactor().clone();
+        let handle2 = self.rt.reactor().clone();
         let mut executor1 = self.rt.executor().clone();
         let mut executor2 = self.rt.executor().clone();
+        let timer_handle = self.timer_handle.clone();
 
         // Make sure the future will run at least once on enter
         self.notify_future.notify(0);
@@ -248,10 +230,12 @@ impl Core {
                 let res = try!(CURRENT_LOOP.set(self, || {
                     ::tokio_reactor::with_default(&handle1, &mut enter, |enter| {
                         tokio_executor::with_default(&mut executor1, enter, |enter| {
-                            current_thread.enter(enter)
-                                .block_on(future::lazy(|| {
-                                    Ok::<_, ()>(task.poll_future_notify(notify, 0))
-                                })).unwrap()
+                            timer::with_default(&timer_handle, enter, |enter| {
+                                current_thread.enter(enter)
+                                    .block_on(future::lazy(|| {
+                                        Ok::<_, ()>(task.poll_future_notify(notify, 0))
+                                    })).unwrap()
+                            })
                         })
                     })
                 }));
@@ -274,7 +258,7 @@ impl Core {
     /// `loop { lp.turn(None) }` is equivalent to calling `run` with an
     /// empty future (one that never finishes).
     pub fn turn(&mut self, max_wait: Option<Duration>) {
-        let handle = self.rt.handle().clone();
+        let handle = self.rt.reactor().clone();
         let mut executor = self.rt.executor().clone();
         self.poll(max_wait, &handle, &mut executor);
     }
@@ -284,91 +268,47 @@ impl Core {
             sender: &mut tokio::runtime::TaskExecutor) {
         let mut enter = tokio_executor::enter()
             .ok().expect("cannot recursively call into `Core`");
+        let timer_handle = self.timer_handle.clone();
 
         ::tokio_reactor::with_default(handle, &mut enter, |enter| {
             tokio_executor::with_default(sender, enter, |enter| {
-                // Given the `max_wait` variable specified, figure out the actual
-                // timeout that we're going to pass to `poll`. This involves taking a
-                // look at active timers on our heap as well.
-                let start = Instant::now();
-                let timeout = self.inner.borrow_mut().timer_heap.peek().map(|t| {
-                    if t.0 < start {
-                        Duration::new(0, 0)
-                    } else {
-                        t.0 - start
+                timer::with_default(&timer_handle, enter, |enter| {
+                    let start = Instant::now();
+
+                    // Process all the events that came in, dispatching appropriately
+                    if self.notify_rx.take() {
+                        CURRENT_LOOP.set(self, || self.consume_queue());
                     }
-                });
-                let timeout = match (max_wait, timeout) {
-                    (Some(d1), Some(d2)) => Some(cmp::min(d1, d2)),
-                    (max_wait, timeout) => max_wait.or(timeout),
-                };
 
-                // Process all the events that came in, dispatching appropriately
-                if self.notify_rx.take() {
-                    CURRENT_LOOP.set(self, || self.consume_queue());
-                }
+                    // Drain any futures pending spawn
+                    {
+                        let mut e = self.executor.borrow_mut();
+                        let mut i = self.inner.borrow_mut();
 
-                // Drain any futures pending spawn
-                {
-                    let mut e = self.executor.borrow_mut();
-                    let mut i = self.inner.borrow_mut();
-
-                    for f in i.pending_spawn.drain(..) {
-                        // Little hack
-                        e.enter(enter).block_on(future::lazy(|| {
-                            TaskExecutor::current().spawn_local(f).unwrap();
-                            Ok::<_, ()>(())
-                        })).unwrap();
+                        for f in i.pending_spawn.drain(..) {
+                            // Little hack
+                            e.enter(enter).block_on(future::lazy(|| {
+                                TaskExecutor::current().spawn_local(f).unwrap();
+                                Ok::<_, ()>(())
+                            })).unwrap();
+                        }
                     }
-                }
 
-                CURRENT_LOOP.set(self, || {
-                    self.executor.borrow_mut()
-                        .enter(enter)
-                        .turn(timeout)
-                        .ok().expect("error in `CurrentThread::turn`");
-                });
+                    CURRENT_LOOP.set(self, || {
+                        self.executor.borrow_mut()
+                            .enter(enter)
+                            .turn(max_wait)
+                            .ok().expect("error in `CurrentThread::turn`");
+                    });
 
-                let after_poll = Instant::now();
-                debug!("loop poll - {:?}", after_poll - start);
-                debug!("loop time - {:?}", after_poll);
+                    let after_poll = Instant::now();
+                    debug!("loop poll - {:?}", after_poll - start);
+                    debug!("loop time - {:?}", after_poll);
 
-                // Process all timeouts that may have just occurred, updating the
-                // current time since
-                self.consume_timeouts(after_poll);
-
-                debug!("loop process, {:?}", after_poll.elapsed());
+                    debug!("loop process, {:?}", after_poll.elapsed());
+                })
             });
         });
-    }
-
-    fn consume_timeouts(&mut self, now: Instant) {
-        loop {
-            let mut inner = self.inner.borrow_mut();
-            match inner.timer_heap.peek() {
-                Some(head) if head.0 <= now => {}
-                Some(_) => break,
-                None => break,
-            };
-            let (_, slab_idx) = inner.timer_heap.pop().unwrap();
-
-            trace!("firing timeout: {}", slab_idx);
-            inner.timeouts[slab_idx].0.take().unwrap();
-            let handle = inner.timeouts[slab_idx].1.fire();
-            drop(inner);
-            if let Some(handle) = handle {
-                self.notify_handle(handle);
-            }
-        }
-    }
-
-    /// Method used to notify a task handle.
-    ///
-    /// Note that this should be used instead of `handle.notify()` to ensure
-    /// that the `CURRENT_LOOP` variable is set appropriately.
-    fn notify_handle(&self, handle: Task) {
-        debug!("notifying a task handle");
-        CURRENT_LOOP.set(self, || handle.notify());
     }
 
     fn consume_queue(&self) {
@@ -385,21 +325,8 @@ impl Core {
     }
 
     fn notify(&self, msg: Message) {
-        match msg {
-            Message::UpdateTimeout(t, handle) => {
-                let task = self.inner.borrow_mut().update_timeout(t, handle);
-                if let Some(task) = task {
-                    self.notify_handle(task);
-                }
-            }
-            Message::ResetTimeout(t, at) => {
-                self.inner.borrow_mut().reset_timeout(t, at);
-            }
-            Message::CancelTimeout(t) => {
-                self.inner.borrow_mut().cancel_timeout(t)
-            }
-            Message::Run(r) => r.call_box(self),
-        }
+        let Message::Run(r) = msg;
+        r.call_box(self);
     }
 
     /// Get the ID of this loop
@@ -421,47 +348,6 @@ impl fmt::Debug for Core {
         f.debug_struct("Core")
          .field("id", &self.id())
          .finish()
-    }
-}
-
-impl Inner {
-    fn add_timeout(&mut self, at: Instant) -> usize {
-        if self.timeouts.len() == self.timeouts.capacity() {
-            let len = self.timeouts.len();
-            self.timeouts.reserve_exact(len);
-        }
-        let entry = self.timeouts.vacant_entry();
-        let key = entry.key();
-        let slot = self.timer_heap.push((at, key));
-        entry.insert((Some(slot), TimeoutState::NotFired));
-        debug!("added a timeout: {}", key);
-        return key;
-    }
-
-    fn update_timeout(&mut self, token: usize, handle: Task) -> Option<Task> {
-        debug!("updating a timeout: {}", token);
-        self.timeouts[token].1.block(handle)
-    }
-
-    fn reset_timeout(&mut self, token: usize, at: Instant) {
-        let pair = &mut self.timeouts[token];
-        // TODO: avoid remove + push and instead just do one sift of the heap?
-        // In theory we could update it in place and then do the percolation
-        // as necessary
-        if let Some(slot) = pair.0.take() {
-            self.timer_heap.remove(slot);
-        }
-        let slot = self.timer_heap.push((at, token));
-        *pair = (Some(slot), TimeoutState::NotFired);
-        debug!("set a timeout: {}", token);
-    }
-
-    fn cancel_timeout(&mut self, token: usize) {
-        debug!("cancel a timeout: {}", token);
-        let pair = self.timeouts.remove(token);
-        if let (Some(slot), _state) = pair {
-            self.timer_heap.remove(slot);
-        }
     }
 }
 
@@ -684,25 +570,6 @@ impl fmt::Debug for Handle {
         f.debug_struct("Handle")
          .field("id", &self.id())
          .finish()
-    }
-}
-
-impl TimeoutState {
-    fn block(&mut self, handle: Task) -> Option<Task> {
-        match *self {
-            TimeoutState::Fired => return Some(handle),
-            _ => {}
-        }
-        *self = TimeoutState::Waiting(handle);
-        None
-    }
-
-    fn fire(&mut self) -> Option<Task> {
-        match mem::replace(self, TimeoutState::Fired) {
-            TimeoutState::NotFired => None,
-            TimeoutState::Fired => panic!("fired twice?"),
-            TimeoutState::Waiting(handle) => Some(handle),
-        }
     }
 }
 

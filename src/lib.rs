@@ -99,11 +99,11 @@ extern crate bytes;
 extern crate futures;
 extern crate iovec;
 extern crate mio;
-extern crate slab;
 extern crate tokio;
 extern crate tokio_executor;
 extern crate tokio_io;
 extern crate tokio_reactor;
+extern crate tokio_timer;
 
 #[macro_use]
 extern crate scoped_tls;
@@ -115,7 +115,6 @@ extern crate log;
 #[doc(hidden)]
 pub mod io;
 
-mod heap;
 #[doc(hidden)]
 pub mod channel;
 pub mod net;

@@ -6,10 +6,10 @@
 use std::io;
 use std::time::{Duration, Instant};
 
-use futures::{Future, Poll, Async};
+use futures::{Future, Poll};
+use tokio_timer::Delay;
 
-use reactor::{Remote, Handle};
-use reactor::timeout_token::TimeoutToken;
+use reactor::Handle;
 
 /// A future representing the notification that a timeout has occurred.
 ///
@@ -21,9 +21,7 @@ use reactor::timeout_token::TimeoutToken;
 #[must_use = "futures do nothing unless polled"]
 #[derive(Debug)]
 pub struct Timeout {
-    token: TimeoutToken,
-    when: Instant,
-    handle: Remote,
+    delay: Delay
 }
 
 impl Timeout {
@@ -43,9 +41,7 @@ impl Timeout {
     /// set to fire at the specified point in the future.
     pub fn new_at(at: Instant, handle: &Handle) -> io::Result<Timeout> {
         Ok(Timeout {
-            token: try!(TimeoutToken::new(at, &handle)),
-            when: at,
-            handle: handle.remote().clone(),
+            delay: handle.remote.timer_handle.delay(at)
         })
     }
 
@@ -63,29 +59,7 @@ impl Timeout {
     /// will be dropped. It is required to call `poll` again after this method
     /// has been called to ensure that a task is blocked on this future.
     pub fn reset(&mut self, at: Instant) {
-        self.when = at;
-        self.token.reset_timeout(self.when, &self.handle);
-    }
-
-    /// Polls this `Timeout` instance to see if it's elapsed, assuming the
-    /// current time is specified by `now`.
-    ///
-    /// The `Future::poll` implementation for `Timeout` will call `Instant::now`
-    /// each time it's invoked, but in some contexts this can be a costly
-    /// operation. This method is provided to amortize the cost by avoiding
-    /// usage of `Instant::now`, assuming that it's been called elsewhere.
-    ///
-    /// This function takes the assumed current time as the first parameter and
-    /// otherwise functions as this future's `poll` function. This will block a
-    /// task if one isn't already blocked or update a previous one if already
-    /// blocked.
-    fn poll_at(&mut self, now: Instant) -> Poll<(), io::Error> {
-        if self.when <= now {
-            Ok(Async::Ready(()))
-        } else {
-            self.token.update_timeout(&self.handle);
-            Ok(Async::NotReady)
-        }
+        self.delay.reset(at)
     }
 }
 
@@ -94,13 +68,7 @@ impl Future for Timeout {
     type Error = io::Error;
 
     fn poll(&mut self) -> Poll<(), io::Error> {
-        // TODO: is this fast enough?
-        self.poll_at(Instant::now())
-    }
-}
-
-impl Drop for Timeout {
-    fn drop(&mut self) {
-        self.token.cancel_timeout(&self.handle);
+        self.delay.poll()
+            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
     }
 }
