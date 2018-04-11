@@ -1,6 +1,6 @@
 [package]
 name = "tokio-core"
-version = "0.1.16"
+version = "0.1.17"
 authors = ["Carl Lerche <me@carllerche.com>"]
 license = "MIT/Apache-2.0"
 repository = "https://github.com/tokio-rs/tokio-core"
@@ -24,10 +24,10 @@ scoped-tls = "0.1.0"
 iovec = "0.1"
 tokio-io = "0.1"
 tokio = "0.1.5"
-tokio-executor = "0.1.1"
+tokio-executor = "0.1.2"
 tokio-reactor = "0.1.1"
 tokio-timer = "0.2.1"
-futures = "0.1.19"
+futures = "0.1.21"
 
 [dev-dependencies]
 env_logger = { version = "0.4", default-features = false }
