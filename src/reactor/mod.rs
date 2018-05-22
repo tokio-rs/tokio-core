@@ -99,8 +99,8 @@ pub struct Remote {
     timer_handle: timer::Handle,
 }
 
-/// A non-sendable handle to an event loop, useful for manufacturing instances
-/// of `LoopData`.
+/// A non-sendable handle to an event loop, typically passed into functions that
+/// create I/O objects to bind them to this event loop.
 #[derive(Clone)]
 pub struct Handle {
     remote: Remote,
@@ -199,7 +199,8 @@ impl Core {
     ///
     /// This function will return the value that the future resolves to once
     /// the future has finished. If the future never resolves then this function
-    /// will never return.
+    /// will never return. Any other futures spawned on this core may still be
+    /// incomplete when this function returns.
     ///
     /// # Panics
     ///
@@ -255,7 +256,7 @@ impl Core {
     /// It only makes sense to call this method if you've previously spawned
     /// a future onto this event loop.
     ///
-    /// `loop { lp.turn(None) }` is equivalent to calling `run` with an
+    /// `loop { core.turn(None) }` is equivalent to calling `run` with an
     /// empty future (one that never finishes).
     pub fn turn(&mut self, max_wait: Option<Duration>) {
         let handle = self.rt.reactor().clone();
