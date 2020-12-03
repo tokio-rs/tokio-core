@@ -1,9 +1,6 @@
 # Deprecation notice.
 
-This crate is scheduled for deprecation in favor of [tokio](http://github.com/tokio-rs/tokio).
-
-`tokio-core` is still actively maintained, but only bug fixes will be applied.
-All new feature development is happening in [tokio](http://github.com/tokio-rs/tokio).
+This crate is deprecated in favor of [Tokio](http://github.com/tokio-rs/tokio).
 
 # tokio-core
 

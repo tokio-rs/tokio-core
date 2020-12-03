@@ -1,5 +1,7 @@
 //! `Future`-powered I/O at the core of Tokio
 //!
+//! > **Note:** This crate is deprecated in favor of [Tokio](http://github.com/tokio-rs/tokio).
+//!
 //! This crate uses the `futures` crate to provide an event loop ("reactor
 //! core") which can be used to drive I/O like TCP and UDP, spawned future
 //! tasks, and other events like channels/timeouts. All asynchronous I/O is
@@ -89,7 +91,7 @@
 //! }
 //! ```
 
-#![doc(html_root_url = "https://docs.rs/tokio-core/0.1.17")]
+#![doc(html_root_url = "https://docs.rs/tokio-core/0.1.18")]
 #![deny(missing_docs)]
 #![deny(warnings)]
 #![cfg_attr(test, allow(deprecated))]
